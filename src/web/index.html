@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>ClaudeForward</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <header class="brand">
+          <span class="logo">⟶</span>
+          <span>ClaudeForward</span>
+        </header>
+        <section class="new-session">
+          <h2>New session</h2>
+          <form id="create-form">
+            <label>
+              Working directory
+              <input type="text" id="cwd" name="cwd" placeholder="/home/you/project" required />
+            </label>
+            <label>
+              Command
+              <input type="text" id="command" name="command" value="claude" required />
+            </label>
+            <label>
+              Args (space separated)
+              <input type="text" id="args" name="args" placeholder="--model sonnet" />
+            </label>
+            <label>
+              Name (optional)
+              <input type="text" id="name" name="name" placeholder="my-feature" />
+            </label>
+            <button type="submit">Create</button>
+            <p id="create-error" class="error" hidden></p>
+          </form>
+        </section>
+        <section class="sessions">
+          <h2>Sessions</h2>
+          <ul id="session-list"></ul>
+        </section>
+        <footer>
+          <button id="logout" type="button">Log out</button>
+        </footer>
+      </aside>
+      <main id="terminal-pane">
+        <header id="terminal-header">
+          <span id="active-session-id">no session selected</span>
+          <span id="connection-status">disconnected</span>
+        </header>
+        <div id="terminal"></div>
+      </main>
+    </div>
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>

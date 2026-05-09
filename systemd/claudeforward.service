@@ -1,0 +1,19 @@
+[Unit]
+Description=ClaudeForward — remote Claude Code sessions over Tailscale
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env node %h/ClaudeForward/dist/server/index.js
+WorkingDirectory=%h/ClaudeForward
+Restart=on-failure
+RestartSec=2
+Environment=NODE_ENV=production
+# tmux server is launched as a child of this unit on startup but must
+# survive restarts of the unit so claude sessions persist. KillMode=mixed
+# sends SIGTERM only to the main process (the daemon), not the whole cgroup.
+KillMode=mixed
+
+[Install]
+WantedBy=default.target
