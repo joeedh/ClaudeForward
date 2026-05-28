@@ -46,11 +46,15 @@ export async function buildApp({ sessions }: BuildAppArgs): Promise<FastifyInsta
     index: false,
   });
 
-  // API responses are live state (the session list changes as other devices
-  // create/kill sessions). Without this, a reverse proxy or a phone browser can
-  // cache an early empty list and never show sessions created elsewhere.
-  app.addHook("onSend", async (req, reply) => {
-    if (req.url.startsWith("/api/")) reply.header("cache-control", "no-store");
+  // Nothing this daemon serves should be cached. API responses are live state
+  // (the session list changes as other devices create/kill sessions), and the
+  // web assets (app.js / index.html / style.css) must never be served stale —
+  // a cached bundle silently masks a rebuilt client, which is easy to mistake
+  // for the rebuild "not working". Force no-store on every response so neither
+  // a phone browser nor the Tailscale HTTPS proxy holds onto anything. This
+  // runs after @fastify/static sets its own cache-control, replacing it.
+  app.addHook("onSend", async (_req, reply) => {
+    reply.header("cache-control", "no-store");
   });
 
   app.get("/api/health", async () => ({ ok: true }));
