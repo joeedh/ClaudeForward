@@ -1,0 +1,27 @@
+diff --git a/lib/conpty_console_list_agent.js b/lib/conpty_console_list_agent.js
+index 8c4fca9022a6d6f015bca87f61625cde2278f428..16b1c04b16d9884d7ce9a2fef19a5ebaaaa5924a 100644
+--- a/lib/conpty_console_list_agent.js
++++ b/lib/conpty_console_list_agent.js
+@@ -10,7 +10,21 @@ Object.defineProperty(exports, "__esModule", { value: true });
+ var utils_1 = require("./utils");
+ var getConsoleProcessList = utils_1.loadNativeModule('conpty_console_list').module.getConsoleProcessList;
+ var shellPid = parseInt(process.argv[2], 10);
+-var consoleProcessList = getConsoleProcessList(shellPid);
++// ClaudeForward patch: getConsoleProcessList(shellPid) throws "AttachConsole
++// failed" when the target process is already gone (it races the concurrent
++// native kill in WindowsPtyAgent.kill) or when the daemon runs detached with
++// no attached console. Upstream lets that surface as an uncaught exception,
++// crashing this forked agent and printing a stack trace on every session kill.
++// The list is only used to reap orphaned grandchildren; on failure, report an
++// empty list so the parent resolves cleanly instead of waiting out its 5s
++// timeout. Falls back to [shellPid] like the parent's own timeout path.
++var consoleProcessList;
++try {
++    consoleProcessList = getConsoleProcessList(shellPid);
++}
++catch (e) {
++    consoleProcessList = [shellPid];
++}
+ process.send({ consoleProcessList: consoleProcessList });
+ process.exit(0);
+ //# sourceMappingURL=conpty_console_list_agent.js.map

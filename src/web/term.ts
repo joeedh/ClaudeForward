@@ -1,6 +1,8 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 
 const TAG_DATA = 0x00;
 const TAG_CONTROL = 0x01;
@@ -37,10 +39,24 @@ export class TerminalSession {
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
     this.term.loadAddon(new WebLinksAddon());
+
+    // Width tables that match a modern terminal — without this, the emoji and
+    // wide CJK glyphs in Claude Code's UI are measured one cell too narrow and
+    // the surrounding box borders drift out of alignment.
+    this.term.loadAddon(new Unicode11Addon());
+    this.term.unicode.activeVersion = "11";
   }
 
   mount(container: HTMLElement): void {
     this.term.open(container);
+    // The WebGL renderer draws box-drawing/block characters as vector glyphs
+    // (customGlyphs, on by default) that span the whole cell and connect — so
+    // Claude Code's horizontal rules render solid instead of as the gapped /
+    // invisible dashes the DOM renderer produces with most monospace fonts.
+    // Must be loaded after open() (it needs the canvas). Fall back to the DOM
+    // renderer if the GL context is unavailable or gets lost (e.g. backgrounded
+    // tab, driver reset) rather than leaving a blank terminal.
+    this.loadWebgl();
     this.fit.fit();
 
     this.resizeObs = new ResizeObserver(() => this.handleResize());
@@ -99,6 +115,18 @@ export class TerminalSession {
       this.resizeObs = null;
     }
     this.term.dispose();
+  }
+
+  private loadWebgl(): void {
+    try {
+      const webgl = new WebglAddon();
+      // If the browser drops the WebGL context, dispose the addon so xterm
+      // transparently reverts to the DOM renderer instead of going blank.
+      webgl.onContextLoss(() => webgl.dispose());
+      this.term.loadAddon(webgl);
+    } catch {
+      // No WebGL2 (rare on a remote/headless GPU): the DOM renderer stays.
+    }
   }
 
   private handleResize(): void {

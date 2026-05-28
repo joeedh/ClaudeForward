@@ -87,10 +87,16 @@ function rememberActiveSession(id: string | null): void {
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  // Only declare a JSON content-type when we actually send a body — otherwise
+  // Fastify's JSON parser rejects the empty body (e.g. on DELETE) with a 400.
+  const headers: Record<string, string> = { ...((init?.headers as Record<string, string>) ?? {}) };
+  if (init?.body != null && !("content-type" in headers)) {
+    headers["content-type"] = "application/json";
+  }
   const res = await fetch(path, {
     cache: "no-store",
-    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
     ...init,
+    headers,
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };

@@ -141,7 +141,11 @@ export class LocalPtyBackend implements SessionBackend {
     };
 
     child.onData((chunk) => {
-      const buf = Buffer.from(chunk, "binary");
+      // node-pty (no `encoding` set) hands us UTF-8-decoded strings. Re-encode
+      // as UTF-8, NOT latin1/"binary" — latin1 keeps only the low byte of each
+      // code unit, turning every char ≥ U+0100 (box-drawing, spinners, emoji —
+      // i.e. most of Claude Code's TUI) into null bytes and garbage.
+      const buf = Buffer.from(chunk, "utf8");
       this.appendScrollback(session, buf);
       for (const ws of session.clients) sendData(ws, buf);
     });

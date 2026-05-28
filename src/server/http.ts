@@ -109,9 +109,17 @@ export async function buildApp({ sessions }: BuildAppArgs): Promise<FastifyInsta
   });
 
   app.setErrorHandler((err, _req, reply) => {
-    const e = err as { message?: string; stack?: string };
-    log.error({ err: e.message ?? String(err), stack: e.stack }, "request error");
-    reply.code(500).send({ error: "internal error" });
+    const e = err as { message?: string; stack?: string; statusCode?: number };
+    // Honor framework/validation errors (e.g. a malformed body is a 400, not a
+    // 500). Only opaque-ify genuine server faults so we don't leak internals.
+    const status = typeof e.statusCode === "number" && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 500;
+    if (status >= 500) {
+      log.error({ err: e.message ?? String(err), stack: e.stack }, "request error");
+      reply.code(status).send({ error: "internal error" });
+    } else {
+      log.warn({ err: e.message ?? String(err), status }, "request rejected");
+      reply.code(status).send({ error: e.message ?? "bad request" });
+    }
   });
 
   return app;
