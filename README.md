@@ -24,9 +24,13 @@ disconnects via tmux; multiple devices can mirror the same live session.
 
 - Node.js ≥ 20
 - [pnpm](https://pnpm.io) ≥ 9
-- tmux ≥ 3.0 (`window-size latest` requires 2.9+)
-- A working `claude` CLI in `$PATH` on the daemon host
+- A working `claude` CLI on `PATH` on the daemon host
+- **tmux ≥ 3.0** — required on Linux/macOS only (the default backend there).
+  Not needed on Windows, which uses a native in-process backend instead.
 - (Optional) Tailscale, for remote access
+
+ClaudeForward runs on Linux, macOS, **and Windows**. The session backend is
+chosen automatically per platform — see [Session backends](#session-backends).
 
 ## Quick start
 
@@ -54,15 +58,22 @@ there.
   "host": "0.0.0.0",
   "tmuxSocket": "claudeforward",
   "sessionPrefix": "cf-",
-  "allowedRoots": ["/home/you"]
+  "allowedRoots": ["/home/you"],
+  "backend": "auto"
 }
 ```
 
 - `allowedRoots`: array of path prefixes a new session's `cwd` must fall under.
-  Defaults to `[$HOME]`. Set to `null` to allow anywhere the daemon user can
-  `chdir`.
+  Defaults to `[$HOME]` (e.g. `C:\Users\you` on Windows). Set to `null` to allow
+  anywhere the daemon user can `chdir`.
 - `tmuxSocket`: the daemon uses an isolated tmux server (`tmux -L
   claudeforward`) so it never collides with your personal tmux sessions.
+  (Ignored by the `local` backend.)
+- `backend`: `"auto"` (default), `"tmux"`, or `"local"`. `auto` picks `tmux` on
+  Linux/macOS and `local` on Windows. See [Session backends](#session-backends).
+
+Config lives at `~/.config/claudeforward/config.json` on every platform — on
+Windows that resolves to `C:\Users\<you>\.config\claudeforward\config.json`.
 
 ## Tailscale exposure
 
@@ -77,16 +88,64 @@ visible only to your tailnet. Inspect with `tailscale serve status`; tear down
 with `tailscale serve reset`. Do **not** use `tailscale funnel` — that puts
 the service on the public internet.
 
+## Session backends
+
+The daemon abstracts session ownership behind a backend, selected by the
+`backend` config key (default `"auto"`):
+
+| Backend | Platforms | Owner of the Claude process | Survives daemon restart? |
+|---------|-----------|-----------------------------|--------------------------|
+| `tmux`  | Linux, macOS | tmux (isolated server)   | **Yes** |
+| `local` | Windows (and anywhere) | the daemon itself (node-pty / ConPTY) | **No** |
+
+`auto` resolves to `tmux` on Linux/macOS and `local` on Windows.
+
+### `tmux` backend (Linux/macOS)
+
+tmux owns each Claude process on a private socket, so sessions outlive daemon
+restarts and disconnects, and each browser attach spawns its own `tmux attach`
+client — mirroring is delegated to tmux.
+
+### `local` backend (Windows)
+
+Windows has no native tmux, so the daemon owns each session's pseudo-terminal
+in-process via [node-pty](https://github.com/microsoft/node-pty) (ConPTY) and
+fans its output out to every attached browser. A per-session scrollback buffer
+(256 KB) is replayed to each newly-attached client so late joiners and
+reconnects land on the current screen.
+
+Trade-offs to know:
+
+- **No restart persistence.** Sessions live in the daemon's memory. If the
+  daemon stops or crashes, its sessions end. Keep the daemon up (see
+  [Running as a service](#running-as-a-service-windows)).
+- **Command resolution.** A bare `claude` is resolved against `PATH` + `PATHEXT`;
+  `.cmd`/`.bat` shims (e.g. an npm-installed `claude.cmd`) are run through
+  `%ComSpec%`, since `CreateProcess` would not find them otherwise.
+- **Harmless `AttachConsole failed` noise.** On session kill, node-pty spawns an
+  internal console-tracking helper that may log `AttachConsole failed`. It is a
+  separate short-lived process, not the daemon, and is safe to ignore.
+
+If you would rather keep the full tmux persistence model on Windows, run the
+daemon inside WSL (where `claude`, tmux, and your repos all live in Linux) and
+leave `backend` at `auto`/`tmux`.
+
 ## Multi-device "mirroring" — what it actually does
 
 Open the same session URL on your laptop and phone. Both terminals show the
-same tmux pane and accept input from either. The daemon's managed tmux config
-sets `window-size latest`, so when you focus the laptop it sizes the window to
-the laptop; when you focus the phone, the window resizes to the phone. When
-both are simultaneously focused, the smaller client clips/wraps — that is the
-unavoidable cost of true mirroring.
+same pane and accept input from either.
 
-## systemd (user service)
+- **`tmux` backend:** the managed tmux config sets `window-size latest`, so the
+  most recently focused client controls the size.
+- **`local` backend:** the daemon fans one PTY's output to every client; the
+  most recent `resize` wins (same "latest client" behavior).
+
+When two clients are simultaneously focused at different sizes, the smaller one
+clips/wraps — the unavoidable cost of true mirroring on either backend.
+
+## Running as a service
+
+### systemd (Linux, user service)
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -97,6 +156,22 @@ loginctl enable-linger "$USER"   # so it survives logout
 ```
 
 Logs: `journalctl --user -u claudeforward -f`.
+
+### Windows
+
+The `local` backend keeps sessions only while the daemon is alive, so keep it
+running. The simplest options:
+
+- **Task Scheduler:** create a task that runs `node` with argument
+  `C:\path\to\ClaudeForward\dist\server\index.js`, triggered "At log on" (or "At
+  startup", running whether or not a user is logged on), set to restart on
+  failure.
+- **A service wrapper** such as [NSSM](https://nssm.cc/) or
+  [WinSW](https://github.com/winsw/winsw), pointing at the same
+  `node dist/server/index.js`.
+
+Run it once from a terminal first (`pnpm start`) to generate the config and
+print the bearer token.
 
 ## REST API (for scripting)
 
@@ -122,10 +197,19 @@ a UTF-8 JSON control message — `{type:"resize",cols,rows}`,
 
 ```
 src/
-├── server/        # fastify app, tmux/PTY plumbing, auth
-└── web/           # xterm.js client, login + session UI
-systemd/           # user-mode unit
-scripts/build-web.mjs   # esbuild bundler
+├── server/
+│   ├── http.ts            # fastify app, REST + WS routes, auth gating
+│   ├── sessionManager.ts  # input validation, delegates to a backend
+│   ├── backend.ts         # SessionBackend interface
+│   ├── tmuxBackend.ts     # Unix backend (tmux owns the process)
+│   ├── localPtyBackend.ts # Windows backend (in-process node-pty/ConPTY)
+│   ├── ptyBridge.ts       # tmux-attach PTY ↔ WS bridge (tmux backend)
+│   ├── wsframe.ts         # shared 0x00/0x01 binary frame protocol
+│   └── …                  # config, auth, tmux helpers, logging
+└── web/                   # xterm.js client, login + session UI
+systemd/                   # Linux user-mode unit
+scripts/build-web.mjs      # esbuild bundler
+scripts/smoke-local.mjs    # local-backend smoke test (node scripts/smoke-local.mjs)
 ```
 
 ## License

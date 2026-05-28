@@ -12,6 +12,9 @@ const ConfigSchema = z.object({
   tmuxSocket: z.string().default("claudeforward"),
   sessionPrefix: z.string().default("cf-"),
   allowedRoots: z.array(z.string()).nullable().default(null),
+  // Session backend: "tmux" (Unix, persistent), "local" (in-process PTYs,
+  // Windows), or "auto" (tmux on Unix, local on Windows).
+  backend: z.enum(["auto", "tmux", "local"]).default("auto"),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -44,6 +47,7 @@ export async function loadOrCreateConfig(): Promise<Config> {
     tmuxSocket: "claudeforward",
     sessionPrefix: "cf-",
     allowedRoots: [homedir()],
+    backend: "auto",
   });
   await writeFile(CONFIG_PATH, JSON.stringify(cfg, null, 2), { mode: 0o600 });
 
@@ -62,6 +66,8 @@ export async function loadOrCreateConfig(): Promise<Config> {
 }
 
 export async function ensureConfigPermissions(): Promise<void> {
+  // POSIX permission bits are not meaningful on Windows; skip the check there.
+  if (process.platform === "win32") return;
   try {
     const s = await stat(CONFIG_PATH);
     const mode = s.mode & 0o777;

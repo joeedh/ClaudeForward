@@ -1,17 +1,11 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import type { WebSocket } from "@fastify/websocket";
 import type { Config } from "./config.js";
-import * as tmux from "./tmux.js";
+import type { SessionBackend, SessionInfo } from "./backend.js";
 
-export interface SessionInfo {
-  id: string;
-  name: string;
-  cwd: string;
-  command: string;
-  created: number;
-  attached: number;
-}
+export type { SessionInfo } from "./backend.js";
 
 export interface CreateSessionInput {
   name?: string;
@@ -20,36 +14,30 @@ export interface CreateSessionInput {
   args?: string[];
 }
 
+/**
+ * Validates session inputs (cwd inside allowedRoots, sane command/args) and
+ * delegates lifecycle + I/O to a platform-specific backend (tmux on Unix,
+ * in-process PTYs on Windows).
+ */
 export class SessionManager {
-  constructor(private readonly cfg: Config) {}
+  constructor(
+    private readonly cfg: Config,
+    private readonly backend: SessionBackend,
+  ) {}
 
-  private get tmuxOpts(): tmux.TmuxOptions {
-    return { socket: this.cfg.tmuxSocket };
-  }
-
-  async list(): Promise<SessionInfo[]> {
-    const rows = await tmux.listSessions(this.tmuxOpts);
-    return rows
-      .filter((r) => r.id.startsWith(this.cfg.sessionPrefix))
-      .map((r) => ({
-        id: r.id,
-        name: r.id.slice(this.cfg.sessionPrefix.length),
-        cwd: r.cwd,
-        command: r.command,
-        created: r.created,
-        attached: r.attached,
-      }));
+  list(): Promise<SessionInfo[]> {
+    return this.backend.list();
   }
 
   async has(id: string): Promise<boolean> {
     if (!id.startsWith(this.cfg.sessionPrefix)) return false;
-    return tmux.hasSession(this.tmuxOpts, id);
+    return this.backend.has(id);
   }
 
   async create(input: CreateSessionInput): Promise<SessionInfo> {
     const cwd = await this.validateCwd(input.cwd);
     const id = this.cfg.sessionPrefix + (input.name ? sanitizeName(input.name) : randomBytes(4).toString("hex"));
-    if (await tmux.hasSession(this.tmuxOpts, id)) {
+    if (await this.backend.has(id)) {
       throw new Error(`session already exists: ${id}`);
     }
     if (!isReasonableCommand(input.command)) {
@@ -59,18 +47,18 @@ export class SessionManager {
     if (!args.every(isReasonableArg)) {
       throw new Error("args must be plain strings");
     }
-    await tmux.newSession(this.tmuxOpts, { id, cwd, command: input.command, args });
-    const list = await this.list();
-    const created = list.find((s) => s.id === id);
-    if (!created) throw new Error("created session not visible to tmux list-sessions");
-    return created;
+    return this.backend.create({ id, name: id.slice(this.cfg.sessionPrefix.length), cwd, command: input.command, args });
   }
 
   async kill(id: string): Promise<void> {
     if (!id.startsWith(this.cfg.sessionPrefix)) {
       throw new Error("refusing to kill session outside our prefix");
     }
-    await tmux.killSession(this.tmuxOpts, id);
+    await this.backend.kill(id);
+  }
+
+  attach(ws: WebSocket, id: string): void {
+    this.backend.attach(ws, id);
   }
 
   private async validateCwd(input: string): Promise<string> {

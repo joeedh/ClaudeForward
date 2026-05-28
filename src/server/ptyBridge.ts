@@ -1,43 +1,10 @@
 import * as pty from "node-pty";
+import { homedir } from "node:os";
 import type { WebSocket } from "@fastify/websocket";
 import type { Config } from "./config.js";
 import { TMUX_CONF_PATH } from "./config.js";
+import { asBuffer, sendControl, sendData, TAG_CONTROL, TAG_DATA, type ControlMessage } from "./wsframe.js";
 import { log } from "./log.js";
-
-export const TAG_DATA = 0x00;
-export const TAG_CONTROL = 0x01;
-
-interface ControlMessage {
-  type: string;
-  cols?: number;
-  rows?: number;
-  msg?: string;
-}
-
-function sendData(ws: WebSocket, chunk: Buffer): void {
-  if (ws.readyState !== ws.OPEN) return;
-  const out = Buffer.allocUnsafe(chunk.length + 1);
-  out[0] = TAG_DATA;
-  chunk.copy(out, 1);
-  ws.send(out, { binary: true });
-}
-
-function sendControl(ws: WebSocket, msg: ControlMessage): void {
-  if (ws.readyState !== ws.OPEN) return;
-  const json = Buffer.from(JSON.stringify(msg), "utf8");
-  const out = Buffer.allocUnsafe(json.length + 1);
-  out[0] = TAG_CONTROL;
-  json.copy(out, 1);
-  ws.send(out, { binary: true });
-}
-
-function asBuffer(data: unknown): Buffer | null {
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (Array.isArray(data)) return Buffer.concat(data.map((d) => (Buffer.isBuffer(d) ? d : Buffer.from(d))));
-  if (typeof data === "string") return Buffer.from(data, "utf8");
-  return null;
-}
 
 export interface BridgeOptions {
   cfg: Config;
@@ -68,7 +35,7 @@ export function bridge({ cfg, sessionId, ws }: BridgeOptions): void {
       name: "xterm-256color",
       cols: 120,
       rows: 32,
-      cwd: process.env.HOME,
+      cwd: process.env.HOME || homedir(),
       env,
     },
   );

@@ -9,7 +9,6 @@ import { z } from "zod";
 import type { Config } from "./config.js";
 import { AuthState, COOKIE_NAME, isAuthenticated } from "./auth.js";
 import { SessionManager } from "./sessionManager.js";
-import { bridge } from "./ptyBridge.js";
 import { log } from "./log.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,7 +29,7 @@ export interface BuildAppArgs {
   sessions: SessionManager;
 }
 
-export async function buildApp({ cfg, auth, sessions }: BuildAppArgs): Promise<FastifyInstance> {
+export async function buildApp({ auth, sessions }: BuildAppArgs): Promise<FastifyInstance> {
   const app = Fastify({
     logger: false,
     trustProxy: true,
@@ -154,7 +153,7 @@ export async function buildApp({ cfg, auth, sessions }: BuildAppArgs): Promise<F
       socket.close(4404, "no such session");
       return;
     }
-    bridge({ cfg, sessionId: id, ws: socket });
+    sessions.attach(socket, id);
   });
 
   app.setNotFoundHandler(async (req, reply) => {
