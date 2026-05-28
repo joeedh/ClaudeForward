@@ -74,14 +74,24 @@ export class SessionManager {
 
     const roots = this.cfg.allowedRoots;
     if (roots && roots.length) {
+      // Windows paths are case-insensitive, so fold case before comparing —
+      // otherwise `c:\dev\x` against an allowedRoots entry of `C:\dev` would be
+      // wrongly rejected. The check stays case-sensitive on Unix.
+      const target = foldPath(resolved);
       const ok = roots.some((root) => {
-        const r = path.resolve(root);
-        return resolved === r || resolved.startsWith(r + path.sep);
+        const r = foldPath(path.resolve(root));
+        return target === r || target.startsWith(r + path.sep);
       });
       if (!ok) throw new Error(`cwd is outside allowedRoots: ${resolved}`);
     }
     return resolved;
   }
+}
+
+// Normalize a path for case-(in)sensitive comparison. Windows file paths are
+// case-insensitive; Unix paths are not, so only fold case on win32.
+function foldPath(p: string): string {
+  return process.platform === "win32" ? p.toLowerCase() : p;
 }
 
 function sanitizeName(name: string): string {

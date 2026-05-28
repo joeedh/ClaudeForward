@@ -10,10 +10,7 @@ const outWeb = path.join(root, "dist/web");
 const watch = process.argv.includes("--watch");
 
 const buildOptions = {
-  entryPoints: [
-    path.join(srcWeb, "app.ts"),
-    path.join(srcWeb, "login.ts"),
-  ],
+  entryPoints: [path.join(srcWeb, "app.ts")],
   bundle: true,
   format: "esm",
   target: "es2022",
@@ -26,7 +23,7 @@ const buildOptions = {
 
 async function copyStatic() {
   await mkdir(outWeb, { recursive: true });
-  for (const file of ["index.html", "login.html", "style.css"]) {
+  for (const file of ["index.html", "style.css"]) {
     await cp(path.join(srcWeb, file), path.join(outWeb, file));
   }
 }

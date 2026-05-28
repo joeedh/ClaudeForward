@@ -1,12 +1,10 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { log } from "./log.js";
 
 const ConfigSchema = z.object({
-  token: z.string().min(32),
   port: z.number().int().min(1).max(65535).default(8765),
   host: z.string().default("0.0.0.0"),
   tmuxSocket: z.string().default("claudeforward"),
@@ -38,10 +36,9 @@ export async function loadOrCreateConfig(): Promise<Config> {
     return parsed;
   }
 
-  // First run: generate token + write defaults.
-  const token = randomBytes(32).toString("hex");
+  // First run: write defaults. Access control is delegated to the network
+  // boundary (Tailscale ACLs on a private tailnet), so there is no token.
   const cfg: Config = ConfigSchema.parse({
-    token,
     port: 8765,
     host: "0.0.0.0",
     tmuxSocket: "claudeforward",
@@ -52,16 +49,6 @@ export async function loadOrCreateConfig(): Promise<Config> {
   await writeFile(CONFIG_PATH, JSON.stringify(cfg, null, 2), { mode: 0o600 });
 
   log.info({ path: CONFIG_PATH }, "wrote new config");
-  // Token MUST be visible to the operator on first run.
-  // eslint-disable-next-line no-console
-  console.log("\n=== ClaudeForward first run ===");
-  // eslint-disable-next-line no-console
-  console.log(`Generated token: ${token}`);
-  // eslint-disable-next-line no-console
-  console.log(`Saved to:        ${CONFIG_PATH}`);
-  // eslint-disable-next-line no-console
-  console.log("Use this token to log in.\n");
-
   return cfg;
 }
 

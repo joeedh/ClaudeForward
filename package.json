@@ -14,6 +14,8 @@
     "build:web": "node scripts/build-web.mjs",
     "build": "pnpm run build:server && pnpm run build:web",
     "start": "node dist/server/index.js",
+    "serve:tailscale": "node scripts/serve-tailscale.mjs",
+    "stop:tailscale": "node scripts/serve-tailscale.mjs reset",
     "dev:server": "tsx watch src/server/index.ts",
     "dev:web": "node scripts/build-web.mjs --watch",
     "dev": "pnpm run build:web && tsx watch src/server/index.ts",

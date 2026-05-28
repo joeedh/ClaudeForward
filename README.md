@@ -18,7 +18,8 @@ disconnects via tmux; multiple devices can mirror the same live session.
 - One persistent set of `claude` sessions you can pick up from anywhere on your
   Tailnet.
 - Daemon restarts don't kill in-flight Claude Code sessions — tmux owns them.
-- Single bearer token + Tailscale ACLs as the security boundary.
+- No application-level auth: the daemon is meant to live on a private tailnet,
+  where Tailscale ACLs are the only access boundary.
 
 ## Requirements
 
@@ -40,12 +41,13 @@ pnpm run build
 pnpm start
 ```
 
-On first run the daemon writes `~/.config/claudeforward/config.json` (mode 0600)
-and prints a generated bearer token. Open `http://<host>:8765/`, paste the
-token, and create a session.
+On first run the daemon writes `~/.config/claudeforward/config.json` (mode 0600).
+Open `http://<host>:8765/` and create a session — no login.
 
-Token lives at `~/.config/claudeforward/config.json` — re-read or rotate it
-there.
+> ⚠️ **There is no authentication.** Anyone who can reach the port gets a shell.
+> Only ever expose it on a private tailnet (see [Tailscale
+> exposure](#tailscale-exposure)); never bind it to a public interface or use
+> `tailscale funnel`.
 
 ## Configuration
 
@@ -53,7 +55,6 @@ there.
 
 ```json
 {
-  "token": "...",
   "port": 8765,
   "host": "0.0.0.0",
   "tmuxSocket": "claudeforward",
@@ -80,8 +81,22 @@ Windows that resolves to `C:\Users\<you>\.config\claudeforward\config.json`.
 Bind locally; let Tailscale handle TLS and the access boundary:
 
 ```bash
-tailscale serve --bg https / http://127.0.0.1:8765
+tailscale serve --bg http://127.0.0.1:8765
 ```
+
+(HTTPS is the default mode, so the target URL is all you pass.) There's also a
+helper that manages the daemon and the proxy together, reading the daemon's
+configured port so the two never drift:
+
+```bash
+pnpm run serve:tailscale            # start daemon (if down, detached) + expose via https
+pnpm run serve:tailscale -- status  # daemon + `tailscale serve` status
+pnpm run serve:tailscale -- reset   # tear down the proxy + stop the daemon
+pnpm run stop:tailscale             # alias for `-- reset`
+```
+
+The daemon is started as its own detached process (it survives the script's
+exit) and tracked via a pidfile next to the config.
 
 Now `https://<machine>.<tailnet>.ts.net/` reaches it, with a real cert,
 visible only to your tailnet. Inspect with `tailscale serve status`; tear down
@@ -170,22 +185,19 @@ running. The simplest options:
   [WinSW](https://github.com/winsw/winsw), pointing at the same
   `node dist/server/index.js`.
 
-Run it once from a terminal first (`pnpm start`) to generate the config and
-print the bearer token.
+Run it once from a terminal first (`pnpm start`) to generate the config.
 
 ## REST API (for scripting)
 
-All routes accept `Authorization: Bearer <token>` in addition to the cookie set
-by `/api/login`.
+No auth — every route is open to anyone who can reach the port (see the
+security note in [Quick start](#quick-start)).
 
 | Method | Path                       | Body / Notes                                   |
 |--------|----------------------------|------------------------------------------------|
-| POST   | `/api/login`               | `{ token }` — sets `cf_session` cookie         |
-| POST   | `/api/logout`              | clears cookie                                  |
 | GET    | `/api/sessions`            | `{ sessions: [...] }`                          |
 | POST   | `/api/sessions`            | `{ name?, cwd, command, args? }`               |
 | DELETE | `/api/sessions/:id`        |                                                |
-| GET    | `/api/health`              | unauthenticated                                |
+| GET    | `/api/health`              | `{ ok: true }`                                 |
 | WS     | `/ws/sessions/:id`         | binary frames; first byte `0x00`=data `0x01`=control |
 
 The WS framing: each frame is a single binary message whose first byte is a
@@ -198,18 +210,24 @@ a UTF-8 JSON control message — `{type:"resize",cols,rows}`,
 ```
 src/
 ├── server/
-│   ├── http.ts            # fastify app, REST + WS routes, auth gating
+│   ├── http.ts            # fastify app, REST + WS routes
 │   ├── sessionManager.ts  # input validation, delegates to a backend
 │   ├── backend.ts         # SessionBackend interface
 │   ├── tmuxBackend.ts     # Unix backend (tmux owns the process)
 │   ├── localPtyBackend.ts # Windows backend (in-process node-pty/ConPTY)
 │   ├── ptyBridge.ts       # tmux-attach PTY ↔ WS bridge (tmux backend)
 │   ├── wsframe.ts         # shared 0x00/0x01 binary frame protocol
-│   └── …                  # config, auth, tmux helpers, logging
-└── web/                   # xterm.js client, login + session UI
+│   └── …                  # config, tmux helpers, logging
+└── web/
+    ├── app.ts             # session UI + WS wiring
+    ├── term.ts            # xterm.js terminal wrapper
+    ├── index.html
+    └── style.css
 systemd/                   # Linux user-mode unit
-scripts/build-web.mjs      # esbuild bundler
-scripts/smoke-local.mjs    # local-backend smoke test (node scripts/smoke-local.mjs)
+scripts/build-web.mjs      # esbuild bundler for the web client
+scripts/serve-tailscale.mjs# daemon + Tailscale proxy manager (pnpm run serve:tailscale)
+scripts/smoke-local.mjs    # LocalPtyBackend smoke test (build first, then: node scripts/smoke-local.mjs)
+scripts/smoke-ws.mjs       # full WS round-trip test against a running daemon
 ```
 
 ## License

@@ -15,7 +15,39 @@ const createErrorEl = document.getElementById("create-error") as HTMLParagraphEl
 const activeIdEl = document.getElementById("active-session-id") as HTMLSpanElement;
 const statusEl = document.getElementById("connection-status") as HTMLSpanElement;
 const terminalContainer = document.getElementById("terminal") as HTMLDivElement;
-const logoutBtn = document.getElementById("logout") as HTMLButtonElement;
+
+const PARAMS_STORAGE_KEY = "claudeforward:lastCreateParams";
+
+interface CreateParams {
+  cwd: string;
+  command: string;
+  args: string;
+}
+
+function loadLastCreateParams(): void {
+  let stored: Partial<CreateParams> | null = null;
+  try {
+    const raw = localStorage.getItem(PARAMS_STORAGE_KEY);
+    if (raw) stored = JSON.parse(raw) as Partial<CreateParams>;
+  } catch {
+    /* ignore malformed/unavailable storage */
+  }
+  if (!stored) return;
+  const cwdEl = document.getElementById("cwd") as HTMLInputElement;
+  const commandEl = document.getElementById("command") as HTMLInputElement;
+  const argsEl = document.getElementById("args") as HTMLInputElement;
+  if (typeof stored.cwd === "string") cwdEl.value = stored.cwd;
+  if (typeof stored.command === "string" && stored.command) commandEl.value = stored.command;
+  if (typeof stored.args === "string") argsEl.value = stored.args;
+}
+
+function saveLastCreateParams(params: CreateParams): void {
+  try {
+    localStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify(params));
+  } catch {
+    /* ignore unavailable storage */
+  }
+}
 
 const term = new TerminalSession({
   onStatus(status, detail) {
@@ -25,18 +57,41 @@ const term = new TerminalSession({
 });
 term.mount(terminalContainer);
 
+const ACTIVE_STORAGE_KEY = "claudeforward:activeSessionId";
+
 let activeSessionId: string | null = null;
+
+// Which session the client should try to reattach to on load. The URL hash
+// (#s=<id>) wins so a session is linkable/shareable across devices; otherwise
+// fall back to this device's last-active session in localStorage.
+function readDesiredSessionId(): string | null {
+  const fromHash = new URLSearchParams(location.hash.replace(/^#/, "")).get("s");
+  if (fromHash) return fromHash;
+  try {
+    return localStorage.getItem(ACTIVE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function rememberActiveSession(id: string | null): void {
+  try {
+    if (id) localStorage.setItem(ACTIVE_STORAGE_KEY, id);
+    else localStorage.removeItem(ACTIVE_STORAGE_KEY);
+  } catch {
+    /* ignore unavailable storage */
+  }
+  const params = new URLSearchParams();
+  if (id) params.set("s", id);
+  history.replaceState(null, "", id ? `#${params.toString()}` : location.pathname + location.search);
+}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
-    credentials: "same-origin",
+    cache: "no-store",
     headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
     ...init,
   });
-  if (res.status === 401) {
-    location.href = "/login";
-    throw new Error("unauthenticated");
-  }
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error ?? `${res.status} ${res.statusText}`);
@@ -44,9 +99,10 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-async function refreshSessions(): Promise<void> {
+async function refreshSessions(): Promise<Session[]> {
   const data = await api<{ sessions: Session[] }>("/api/sessions");
   renderSessions(data.sessions);
+  return data.sessions;
 }
 
 function renderSessions(sessions: Session[]): void {
@@ -88,6 +144,7 @@ function renderSessions(sessions: Session[]): void {
         if (activeSessionId === s.id) {
           activeSessionId = null;
           activeIdEl.textContent = "no session selected";
+          rememberActiveSession(null);
           term.detach();
         }
         await refreshSessions();
@@ -105,6 +162,7 @@ function renderSessions(sessions: Session[]): void {
 async function attach(id: string): Promise<void> {
   activeSessionId = id;
   activeIdEl.textContent = id;
+  rememberActiveSession(id);
   term.attach(id);
   await refreshSessions();
 }
@@ -124,21 +182,13 @@ createForm.addEventListener("submit", async (e) => {
       method: "POST",
       body: JSON.stringify({ cwd, command, args, name }),
     });
+    saveLastCreateParams({ cwd, command, args: argsRaw });
     await refreshSessions();
     await attach(data.session.id);
   } catch (err) {
     createErrorEl.textContent = (err as Error).message;
     createErrorEl.hidden = false;
   }
-});
-
-logoutBtn.addEventListener("click", async () => {
-  try {
-    await api("/api/logout", { method: "POST" });
-  } catch {
-    /* ignore */
-  }
-  location.href = "/login";
 });
 
 function escapeHtml(s: string): string {
@@ -156,10 +206,23 @@ function shortCwd(p: string): string {
   return "…" + p.slice(-39);
 }
 
-void refreshSessions().catch((err) => {
-  createErrorEl.textContent = (err as Error).message;
-  createErrorEl.hidden = false;
-});
+loadLastCreateParams();
+
+void (async () => {
+  try {
+    const sessions = await refreshSessions();
+    // Reattach to the previously-active session if it still exists server-side.
+    const desired = readDesiredSessionId();
+    if (desired && sessions.some((s) => s.id === desired)) {
+      await attach(desired);
+    } else if (desired) {
+      rememberActiveSession(null);
+    }
+  } catch (err) {
+    createErrorEl.textContent = (err as Error).message;
+    createErrorEl.hidden = false;
+  }
+})();
 
 setInterval(() => {
   void refreshSessions().catch(() => {

@@ -1,13 +1,27 @@
 import * as pty from "node-pty";
 import path from "node:path";
 import { homedir } from "node:os";
-import { access } from "node:fs/promises";
+import { access, readFile, writeFile, rm } from "node:fs/promises";
 import { constants as FS } from "node:fs";
 import type { WebSocket } from "@fastify/websocket";
-import type { Config } from "./config.js";
+import { CONFIG_DIR, type Config } from "./config.js";
 import type { SessionBackend, SessionInfo, SessionSpec } from "./backend.js";
 import { asBuffer, sendControl, sendData, TAG_CONTROL, TAG_DATA, type ControlMessage } from "./wsframe.js";
 import { log } from "./log.js";
+
+// Where we persist session specs so they can be relaunched after a daemon
+// restart. Only metadata is saved — the live PTY/terminal state is not.
+const STORE_PATH = path.join(CONFIG_DIR, "local-sessions.json");
+
+// A persisted session spec: enough to relaunch the program, not its live state.
+interface StoredSession {
+  id: string;
+  name: string;
+  cwd: string;
+  command: string;
+  args: string[];
+  created: number;
+}
 
 // How much raw terminal output to retain per session so a freshly-attached (or
 // re-attached) client can be brought up to the current screen state. Crude vs.
@@ -22,6 +36,7 @@ interface LocalSession {
   name: string;
   cwd: string;
   command: string;
+  args: string[];
   created: number; // epoch seconds, matching tmux's session_created
   pty: pty.IPty;
   cols: number;
@@ -47,8 +62,9 @@ export class LocalPtyBackend implements SessionBackend {
   async init(): Promise<void> {
     log.warn(
       { platform: process.platform },
-      "using in-process PTY backend — sessions will NOT survive a daemon restart",
+      "using in-process PTY backend — live terminal state will NOT survive a daemon restart",
     );
+    await this.restore();
   }
 
   async list(): Promise<SessionInfo[]> {
@@ -67,7 +83,31 @@ export class LocalPtyBackend implements SessionBackend {
   }
 
   async create(spec: SessionSpec): Promise<SessionInfo> {
-    const { file, args } = await resolveSpawn(spec.command, spec.args);
+    const session = await this.launch({
+      id: spec.id,
+      name: spec.name,
+      cwd: spec.cwd,
+      command: spec.command,
+      args: spec.args,
+      created: Math.floor(Date.now() / 1000),
+    });
+    void this.persist();
+    return {
+      id: session.id,
+      name: session.name,
+      cwd: session.cwd,
+      command: session.command,
+      created: session.created,
+      attached: 0,
+    };
+  }
+
+  /**
+   * Spawn the PTY for a session spec and wire up its I/O and lifecycle. Shared
+   * by create() (new sessions) and restore() (relaunch on daemon startup).
+   */
+  private async launch(stored: StoredSession): Promise<LocalSession> {
+    const { file, args } = await resolveSpawn(stored.command, stored.args);
 
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
@@ -80,16 +120,17 @@ export class LocalPtyBackend implements SessionBackend {
       name: "xterm-256color",
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
-      cwd: spec.cwd,
+      cwd: stored.cwd,
       env,
     });
 
     const session: LocalSession = {
-      id: spec.id,
-      name: spec.name,
-      cwd: spec.cwd,
-      command: spec.command,
-      created: Math.floor(Date.now() / 1000),
+      id: stored.id,
+      name: stored.name,
+      cwd: stored.cwd,
+      command: stored.command,
+      args: stored.args,
+      created: stored.created,
       pty: child,
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
@@ -117,20 +158,13 @@ export class LocalPtyBackend implements SessionBackend {
         }
       }
       this.sessions.delete(session.id);
+      void this.persist();
       log.info({ sessionId: session.id, exitCode, signal }, "local session exited");
     });
 
-    this.sessions.set(spec.id, session);
-    log.info({ sessionId: spec.id, pid: child.pid, file }, "local session created");
-
-    return {
-      id: session.id,
-      name: session.name,
-      cwd: session.cwd,
-      command: session.command,
-      created: session.created,
-      attached: 0,
-    };
+    this.sessions.set(stored.id, session);
+    log.info({ sessionId: stored.id, pid: child.pid, file }, "local session launched");
+    return session;
   }
 
   async kill(id: string): Promise<void> {
@@ -149,6 +183,7 @@ export class LocalPtyBackend implements SessionBackend {
       }
     }
     this.sessions.delete(id);
+    void this.persist();
     log.info({ sessionId: id }, "local session killed");
   }
 
@@ -223,6 +258,79 @@ export class LocalPtyBackend implements SessionBackend {
       default:
         return;
     }
+  }
+
+  // Serialize writes so overlapping create/exit/kill events can't interleave
+  // and corrupt the store file.
+  private writeChain: Promise<void> = Promise.resolve();
+
+  /** Snapshot current session specs to disk (metadata only, not live state). */
+  private persist(): Promise<void> {
+    const snapshot: StoredSession[] = [...this.sessions.values()].map((s) => ({
+      id: s.id,
+      name: s.name,
+      cwd: s.cwd,
+      command: s.command,
+      args: s.args,
+      created: s.created,
+    }));
+    this.writeChain = this.writeChain.then(async () => {
+      try {
+        if (snapshot.length === 0) {
+          await rm(STORE_PATH, { force: true });
+        } else {
+          await writeFile(STORE_PATH, JSON.stringify(snapshot, null, 2), { mode: 0o600 });
+        }
+      } catch (err) {
+        log.warn({ err: (err as Error).message }, "failed to persist local sessions");
+      }
+    });
+    return this.writeChain;
+  }
+
+  /** Relaunch persisted sessions on daemon startup. */
+  private async restore(): Promise<void> {
+    let raw: string;
+    try {
+      raw = await readFile(STORE_PATH, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        log.warn({ err: (err as Error).message }, "failed to read persisted sessions");
+      }
+      return;
+    }
+
+    let stored: StoredSession[];
+    try {
+      const parsed = JSON.parse(raw);
+      stored = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      log.warn({ path: STORE_PATH }, "persisted sessions file is corrupt; ignoring");
+      return;
+    }
+
+    let restored = 0;
+    for (const spec of stored) {
+      if (!spec || typeof spec.id !== "string") continue;
+      if (this.sessions.has(spec.id)) continue;
+      try {
+        await this.launch({
+          id: spec.id,
+          name: spec.name,
+          cwd: spec.cwd,
+          command: spec.command,
+          args: Array.isArray(spec.args) ? spec.args : [],
+          created: typeof spec.created === "number" ? spec.created : Math.floor(Date.now() / 1000),
+        });
+        restored++;
+      } catch (err) {
+        // cwd gone, command missing, etc. — drop it rather than crash startup.
+        log.warn({ sessionId: spec.id, err: (err as Error).message }, "failed to restore session");
+      }
+    }
+    // Rewrite the store so any sessions we couldn't restore are pruned.
+    void this.persist();
+    if (restored) log.info({ restored }, "restored local sessions after restart");
   }
 
   private appendScrollback(session: LocalSession, buf: Buffer): void {

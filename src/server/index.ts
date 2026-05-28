@@ -1,5 +1,4 @@
 import { ensureConfigPermissions, loadOrCreateConfig, type Config } from "./config.js";
-import { AuthState } from "./auth.js";
 import { SessionManager } from "./sessionManager.js";
 import type { SessionBackend } from "./backend.js";
 import { TmuxBackend } from "./tmuxBackend.js";
@@ -20,9 +19,8 @@ async function main() {
   const backend = createBackend(cfg);
   await backend.init();
 
-  const auth = new AuthState(cfg.token);
   const sessions = new SessionManager(cfg, backend);
-  const app = await buildApp({ cfg, auth, sessions });
+  const app = await buildApp({ cfg, sessions });
 
   await app.listen({ host: cfg.host, port: cfg.port });
   log.info({ host: cfg.host, port: cfg.port }, "ClaudeForward listening");

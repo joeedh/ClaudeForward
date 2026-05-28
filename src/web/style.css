@@ -54,7 +54,7 @@ body {
 
 .new-session form { display: flex; flex-direction: column; gap: 8px; }
 .new-session label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
-.new-session input, .login-card input {
+.new-session input {
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
@@ -63,7 +63,7 @@ body {
   font-family: inherit;
   font-size: 13px;
 }
-.new-session input:focus, .login-card input:focus {
+.new-session input:focus {
   outline: none;
   border-color: var(--accent);
 }
@@ -120,18 +120,6 @@ button:hover { background: var(--accent-hi); }
 }
 .session-kill:hover { background: var(--error); color: #fff; }
 
-#sidebar footer {
-  border-top: 1px solid var(--border);
-  display: flex;
-  justify-content: flex-end;
-}
-#logout {
-  background: transparent;
-  color: var(--text-dim);
-  border: 1px solid var(--border);
-}
-#logout:hover { background: var(--panel-hi); color: var(--text); }
-
 #terminal-pane {
   display: flex;
   flex-direction: column;
@@ -162,29 +150,20 @@ button:hover { background: var(--accent-hi); }
 }
 #terminal .xterm { height: 100%; }
 
-/* Login page */
-.login-body {
-  display: grid;
-  place-items: center;
-  height: 100vh;
-  background: var(--bg);
-}
-.login-card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  padding: 24px;
-  border-radius: 8px;
-  width: min(380px, calc(100vw - 32px));
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.login-card h1 { margin: 0; font-size: 18px; }
-.login-card .muted { margin: 0; color: var(--text-dim); font-size: 13px; }
-.login-card form { display: flex; flex-direction: column; gap: 10px; }
-.login-card label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
-
 @media (max-width: 720px) {
   #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-  #sidebar { border-right: none; border-bottom: 1px solid var(--border); max-height: 50vh; }
+  /* The sidebar becomes a scrollable top panel. Let its sections take their
+     natural height and scroll the whole sidebar — otherwise the tall create
+     form squeezes the flex:1 session list down to zero and the list vanishes. */
+  #sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    max-height: 55vh;
+    overflow-y: auto;
+  }
+  .brand { order: 0; }
+  /* Show the session list first (right under the brand) so it's visible
+     without scrolling past the create form. */
+  .sessions { order: 1; flex: none; overflow: visible; }
+  .new-session { order: 2; border-top: 1px solid var(--border); }
 }
