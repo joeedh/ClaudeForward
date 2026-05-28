@@ -139,7 +139,10 @@ async function stopDaemon() {
   await rm(PID_PATH, { force: true });
 }
 
-const sub = process.argv[2];
+// Drop a leading `--`: `pnpm run serve:tailscale -- reset` forwards the `--`
+// itself as argv[2] (depending on the pnpm version), which would otherwise
+// mask the real subcommand and silently fall through to the start path.
+const sub = process.argv.slice(2).find((a) => a !== "--");
 
 if (sub === "status") {
   const { port } = await readConfig();
